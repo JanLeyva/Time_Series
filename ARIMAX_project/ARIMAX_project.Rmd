@@ -1,0 +1,961 @@
+---
+title: "**ARIMAX Model for CO2 Ind USA** \n \n Universitat Politècnica de Catalunya"
+date: '`r format(Sys.Date(),"%e de %B, %Y")`'
+author: '`r params$author`'
+output:
+  html_document:
+    theme: united
+    df_print: paged
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    number_sections: yes
+    toc: yes
+header-includes:
+   - \usepackage{subfig}
+params:
+  show_code: TRUE
+  seed: 1234
+  author: 'Raúl López Martinez, Jan Leyva and Andreu Meca'
+  partition: 0.5
+  #myDescription: 'In this work is analyzed the CO2 emissions from the industrial sector in the USA (Millions of Tm) Source: US Energy Information Administration. https://www.eia.gov/totalenergy/data/monthly Environment / Industrial Sector'
+  dataset: CO2IndUSA.dat
+bibliography: scholar.bib  
+---
+
+```{r setup_rmd, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+\newpage
+
+```{r}
+if(!require("knitr")) install.packages("knitr")
+if(!require("tree")) install.packages("tree")
+if(!require("ISLR")) install.packages("ISLR")
+if(!require("MASS")) install.packages("MASS")
+if(!require("forecast")) install.packages("forecast")
+if(!require("chron")) install.packages("chron")
+
+require("forecast")
+require("knitr")
+require("tree")
+require("ISLR")
+require("MASS")
+require("chron")
+```
+
+
+
+```{r}
+validation=function(model,dades){
+  s=frequency(get(model$series))
+  resid=model$residuals
+  par(mfrow=c(2,2),mar=c(3,3,3,3))
+  #Residuals plot
+  plot(resid,main="Residuals")
+  abline(h=0)
+  abline(h=c(-3*sd(resid),3*sd(resid)),lty=3,col=4)
+  #Square Root of absolute values of residuals (Homocedasticity)
+  scatter.smooth(sqrt(abs(resid)),main="Square Root of Absolute residuals",
+                 lpars=list(col=2))
+  
+  #Normal plot of residuals
+  qqnorm(resid)
+  qqline(resid,col=2,lwd=2)
+  
+  ##Histogram of residuals with normal curve
+  hist(resid,breaks=20,freq=FALSE)
+  curve(dnorm(x,mean=mean(resid),sd=sd(resid)),col=2,add=T)
+  
+  ## Individual Correlation Tests 
+  #ACF & PACF of residuals
+  par(mfrow=c(1,2))
+  acf(resid,ylim=c(-1,1),lag.max=60,col=c(2,rep(1,s-1)),lwd=1)
+  pacf(resid,ylim=c(-1,1),lag.max=60,col=c(rep(1,s-1),2),lwd=1)
+  par(mfrow=c(1,1))
+  
+  #ACF & PACF of square residuals 
+  par(mfrow=c(1,2))
+  acf(resid^2,ylim=c(-1,1),lag.max=60,col=c(2,rep(1,s-1)),lwd=1)
+  pacf(resid^2,ylim=c(-1,1),lag.max=60,col=c(rep(1,s-1),2),lwd=1)
+  par(mfrow=c(1,1))
+  
+  #Global Correlation Test
+  #Ljung-Box p-values
+  par(mar=c(2,2,1,1))
+  tsdiag(model,gof.lag=7*s)
+  cat("\n--------------------------------------------------------------------\n")
+  print(model)
+  
+  # #Stationary and Invertible
+  # cat("\nModul of AR Characteristic polynomial Roots: ", 
+  #     Mod(polyroot(c(1,-model$model$phi))),"\n")
+  # cat("\nModul of MA Characteristic polynomial Roots: ",
+  #     Mod(polyroot(c(1,model$model$theta))),"\n")
+  # 
+  # #Model expressed as an MA infinity (psi-weights)
+  # psis=ARMAtoMA(ar=model$model$phi,ma=model$model$theta,lag.max=72)
+  # names(psis)=paste("psi",1:72)
+  # cat("\nPsi-weights (MA(inf))\n")
+  # cat("\n--------------------\n")
+  # print(psis[1:20])
+  # 
+  # plot(psis,type="h",main="Pesos Psis - MA infinito")
+  # 
+  # #Model expressed as an AR infinity (pi-weights)
+  # pis=-ARMAtoMA(ar=-model$model$theta,ma=-model$model$phi,lag.max=72)
+  # names(pis)=paste("pi",1:72)
+  # cat("\nPi-weights (AR(inf))\n")
+  # cat("\n--------------------\n")
+  # print(pis[1:20])
+  # plot(pis,type="h",main="Pesos Pis - AR infinito")
+  
+  #   #Some Complementary Tests
+  #   cat("\nNormality tests\n")
+  #   cat("\n--------------------\n")  
+  #   ##Shapiro-Wilks Normality test
+  #   print(shapiro.test(resid(model)))
+  # 
+  #   suppressMessages(require(nortest,quietly=TRUE,warn.conflicts=FALSE))
+  # ##Anderson-Darling test: Normality
+  #   print(ad.test(resid(model)))
+  #   
+  #   suppressMessages(require(tseries,quietly=TRUE,warn.conflicts=FALSE))
+  #   ##Jarque-Bera test: Normality
+  #   print(jarque.bera.test(resid(model)))
+  #   
+  #   cat("\nHomoscedasticity Test\n")
+  #   cat("\n--------------------\n")
+  #   suppressMessages(require(lmtest,quietly=TRUE,warn.conflicts=FALSE))
+  #   ##Breusch-Pagan test
+  #   obs=get(model$series)
+  #   print(bptest(resid(model)~I(obs-resid(model))))
+  #   
+  #   cat("\nIndependence Tests\n")
+  #   cat("\n--------------------\n")
+  #   
+  #   ##Durbin-Watson test
+  #   print(dwtest(resid(model)~I(1:length(resid(model)))))
+  #   
+  ##Ljung-Box test
+  cat("\nLjung-Box test\n")
+  print(t(apply(matrix(c(1:4,(1:4)*s)),1,function(el) {
+    te=Box.test(resid(model),type="Ljung-Box",lag=el)
+    c(lag=(te$parameter),statistic=te$statistic[[1]],p.value=te$p.value)})))
+  
+  
+  #Sample ACF vs. Teoric ACF: similar?
+  par(mfrow=c(2,2),mar=c(3,3,3,3))
+  acf(dades, ylim=c(-1,1) ,lag.max=36,main="Sample ACF")
+  
+  plot(ARMAacf(model$model$phi,model$model$theta,lag.max=36),ylim=c(-1,1), 
+       type="h",xlab="Lag",  ylab="", main="ACF Teoric")
+  abline(h=0)
+  
+  #Sample PACF vs. Teoric PACF
+  pacf(dades, ylim=c(-1,1) ,lag.max=36,main="Sample PACF")
+  
+  plot(ARMAacf(model$model$phi,model$model$theta,lag.max=36, pacf=T),ylim=c(-1,1),
+       type="h", xlab="Lag", ylab="", main="PACF Teoric")
+  abline(h=0)
+  par(mfrow=c(1,1))
+}
+
+infinite_models <- function(model){
+    #Stationary and Invertible
+  cat("\nModul of AR Characteristic polynomial Roots: ", 
+      Mod(polyroot(c(1,-model$model$phi))),"\n")
+  cat("\nModul of MA Characteristic polynomial Roots: ",
+      Mod(polyroot(c(1,model$model$theta))),"\n")
+  
+  #Model expressed as an MA infinity (psi-weights)
+  psis=ARMAtoMA(ar=model$model$phi,ma=model$model$theta,lag.max=72)
+  names(psis)=paste("psi",1:72)
+  cat("\nPsi-weights (MA(inf))\n")
+  cat("\n--------------------\n")
+  print(psis[1:20])
+  
+  plot(psis,type="h",main="Pesos Psis - MA infinito")
+  
+  #Model expressed as an AR infinity (pi-weights)
+  pis=-ARMAtoMA(ar=-model$model$theta,ma=-model$model$phi,lag.max=72)
+  names(pis)=paste("pi",1:72)
+  cat("\nPi-weights (AR(inf))\n")
+  cat("\n--------------------\n")
+  print(pis[1:20])
+  plot(pis,type="h",main="Pesos Pis - AR infinito")
+}
+
+outdetec<-function(object,dif=c(0,0),crit,LS=T){ 
+residuals<-object$residuals
+m<-length(residuals)
+
+piweight<--ARMAtoMA(ar=-object$model$theta, ma=-object$model$phi, lag.max=m+sum(dif))
+
+if (dif[1]!=0) for(i in 1:dif[1]) piweight<-c(piweight,0)-c(-1,piweight)
+if (length(dif)>1){
+for (i in 2:length(dif)){
+if (dif[i]>1) piweight<-c(piweight,rep(0,dif[i]))-c(rep(0,dif[i]-1),-1,piweight)
+}
+}
+piweight<-piweight[1:m]
+
+atip<-NULL	
+
+num<-NULL
+type<-NULL
+wcoeff<-NULL
+LCrit<-NULL
+if (crit<=0) {cat("The Critical value may be positive") }
+
+va<-mean(residuals^2)
+
+c<-cumsum(piweight)-1
+
+d<-rep(0,m)
+delta<-0.7
+d[1]<-piweight[1]-delta
+for (i in 2:m) d[i]<-delta*d[i-1]+piweight[i]
+
+sum1<-1+sum(piweight*piweight)
+sum2<-1+sum(c*c)
+sum3<-1+sum(d*d)
+
+maxL<-crit+1
+ 
+while (maxL>crit)
+{	ka1<-sum1
+	ks1<-sum2
+	kt1<-sum3
+      maxL<-0
+	for (i in 1:m)
+	{	
+
+		suma1<-sum(residuals[i:m]*c(1,-piweight[1:(m-i)]))
+		suma2<-sum(residuals[i:m]*c(1,-c[1:(m-i)]))
+		suma3<-sum(residuals[i:m]*c(1,-d[1:(m-i)]))
+
+		ka1<-ka1 - piweight[m-i+1]*piweight[m-i+1]
+		w_ao<-suma1/ka1
+		v_ao<-va/ka1
+		l_ao<-w_ao/sqrt(v_ao)
+
+		ks1<-ks1 - c[m-i+1]*c[m-i+1]
+		w_ls<-suma2/ks1
+		v_ls<-va/ks1
+		l_ls<-w_ls/sqrt(v_ls)
+
+		kt1<-kt1 - d[m-i+1]*d[m-i+1]
+		w_tc<-suma3/kt1
+		v_tc<-va/kt1
+		l_tc<-w_tc/sqrt(v_tc)
+
+		if(abs(l_ao)>maxL & i>sum(dif))
+		{	maxL<-abs(l_ao)
+			t<-i
+			w<-w_ao
+			v<-v_ao
+			ts<-"AO"
+		}
+		if(abs(l_ls)>maxL & LS==T & i!=m & i>sum(dif))
+		{	maxL<-abs(l_ls)
+			t<-i
+			w<-w_ls
+			v<-v_ls
+			ts<-"LS"
+		}
+		if(abs(l_tc)>maxL & i!=m & i>sum(dif))
+		{	maxL<-abs(l_tc)
+			t<-i
+			w<-w_tc
+			v<-v_tc
+			ts<-"TC"
+		}
+	}
+
+
+	if(maxL > crit){
+		if(ts=="AO") residuals[t:m]<-residuals[t:m]+w*c(-1,piweight[1:(m-t)])
+		if(ts=="LS") residuals[t:m]<-residuals[t:m]+w*c(-1,c[1:(m-t)])
+		if(ts=="TC") residuals[t:m]<-residuals[t:m]+w*c(-1,d[1:(m-t)])
+		
+		val<-mean(residuals^2)
+		l<-w/sqrt(v*val/va)
+		va<-val
+
+		num<-c(num,t)
+		type<-c(type,ts)
+		wcoeff<-c(wcoeff,w)
+		LCrit<-c(LCrit,abs(l))
+		
+		atip<-data.frame(Obs=num,type_detected=type,W_coeff=wcoeff,ABS_L_Ratio=LCrit)
+
+	}
+}
+return(list(atip=atip,sigma2=va,resid=residuals))
+}	
+
+
+#funci? per linealitzar la serie.
+
+lineal<-function(serie,atip){
+	
+m<-length(serie)
+for(i in 1:nrow(atip))
+{
+	t<-atip[i,1]
+	ts<-atip[i,2]
+	w<-atip[i,3]
+	if(ts=="TC")	serie[t:m]<-serie[t:m]-w*c(1,0.7^(1:(m-t)))
+	if(ts=="LS")	serie[t:m]<-serie[t:m]-w
+	if(ts=="AO")	serie[t]<-serie[t]-w 
+}
+
+return(serie)
+
+}
+```
+
+
+# Introduction
+
+The aim of this project is to apply the Box-Jenkins ARIMA methodology, following the 4 steps this method comprises which are identification, estimation, validation and finally predicting. This project also includes the outlier treatment and calendar effect to the series.
+
+The data used for the project is based on the CO2 emissions from the industrial sector in the USA from 1990 to 2020.
+
+Source: US Energy Information Administration. [Source](https://www.eia.gov/totalenergy/data/monthly/Environment/Industrial Sector)
+
+The data is collected in millions of tonnes in a 20 year period, which includes the recession at the beginning of the 1990's, the recession of the 2000, caused by the dotcom and the 11S attacks, and the great recession of 2008 caused by the subprime mortgage crisis. To have a better idea, let's plot the data.\newline
+
+```{r}
+serie=ts(read.table("CO2IndUSA.dat"),start=1990,freq=12)
+```
+
+```{r}
+plot(serie,main="CO2 emissions from the industrial sector in the USA", ylab="millions of Tm")
+abline(v=1985:2020,lty=3,col=4)
+```
+
+The code used for the project can be found at [github](https://github.com/JanLeyva/TimeSeries)
+
+\newpage
+
+# Identification
+
+The first step of the Bok-Jenkins methodology is to identify the time series. That means to check if it is stationary, if not apply a series of transformations until it reaches stationarity, and then identify if it has an autoregressive and/or moving average component/s.
+
+## Determine the needed transformations to make the series stationary. Justify the transformations carried out using graphical and numerical results.
+
+To check if the series needs to be differenced we have to check 3 characteristics: Variance, Seasonality and Mean. For every transformation we apply to the series we'll have to check again the 3 characteristics.
+
+The analysis starts by checking if the variance is constant, which is done with a mean-variance plot and a yearly boxplot of the series:\newline
+
+```{r}
+m=apply(matrix(serie,nr=12),2,mean)
+v=apply(matrix(serie,nr=12),2,var)
+plot(m,v,
+     xlab="Yearly Mean",ylab="Yearly Variance",
+     col = "blue", pch = 20)
+title("Mean-Variance", line = 0.5)
+abline(lm(v~m),col=2,lty=3,lwd=2)
+
+boxplot(serie~floor(time(serie)))
+title("Yearly Boxplot", line = 0.5)
+```
+
+It clearly isn't constant as in the mean-variance plot the fitted line is not straight, indicating that the variance is not constant throughout the series, so we'll apply the logarithm to make it constant. Now, if we check again, we can see that it is a straight line and all the dimensions of the boxes in the boxplot are quite similar, as the magnitude in the y-axis is much lower than before, indicating that the difference in the variance is much more constant than it was before.\newline
+
+```{r}
+lnserie<-log(log(serie))
+
+m=apply(matrix(lnserie,nr=12),2,mean)
+v=apply(matrix(lnserie,nr=12),2,var)
+plot(m,v,
+     xlab="Yearly Mean",ylab="Yearly Variance",
+     col = "blue", pch = 20, ylim = c(0, 0.001))
+title("Mean-Variance", line = 0.5)
+abline(lm(v~m),col=2,lty=3,lwd=2)
+
+boxplot(lnserie~floor(time(lnserie)))
+title("Yearly Boxplot", line = 0.5)
+```
+
+Secondly, it is checked if there exists a seasonal component by plotting the Decomposed series into 3 components: trend, seasonal and random and the Monthplot.\newline
+
+```{r}
+plot(decompose(lnserie))
+
+monthplot(lnserie)
+title("Monthplot", line = 0.5)
+```
+
+It is possible to see a seasonal component as, for example, January and August have a constant higher value whereas February, April and September have a lower value. In order to deseasonalize the time series, a difference is applied with a 12 month frequency\newline
+
+```{r}
+d12lnserie=diff(lnserie,12)
+plot(d12lnserie, ylab="d12lnserie")
+title("Log-seasonal differenced Time Series", line = 0.5)
+abline(v=1985:2020,lty=3,col=4)
+abline(h=mean(d12lnserie))
+```
+\newpage
+
+Lastly, in a stationary series the mean is equal to 0 and, although it seems to be close to it, to be on the safe side we'll run a test to see if applying two more differences is useful or not. To check that, the variance of the series is calculated and it will be over-differenced once the variance is higher than the last differenced series.\newline
+
+```{r}
+diff_variances<-matrix(c(var(serie),
+                         var(lnserie),
+                         var(d12lnserie),
+                         var(diff(d12lnserie,1)),
+                         var(diff(diff(d12lnserie,1)))))
+
+rownames(diff_variances) <- c("Var serie", 
+                              "Var-lnserie", 
+                              "Var-d12lnserie", 
+                              "Var-d12d1lnserie",
+                              "Var-d12d1d1lnserie")
+colnames(diff_variances) <- "Variance"
+
+knitr::kable(diff_variances)
+```
+
+As it could be hypothesized, one regular difference is enough, two is over-differencing. So, finally, we've applied the logarithm, one difference in the seasonal 12-month component and one regular difference to reach stationarity of the series. Finally, a look at the current time series we have with said transformations.\newline
+
+```{r}
+d1d12lnserie=diff(d12lnserie,1)
+plot(d1d12lnserie, ylab="d1d12lnserie", main = "Differenced CO2 emissions from the industrial sector in the USA")
+abline(v=1985:2020,lty=3,col=4)
+```
+
+## Analyze the ACF and PACF of the stationary series to identify at least two plausible models. Reason about what features of the correlograms you use to identify these models.
+
+```{r}
+par(mfrow=c(1,2))
+acf(d1d12lnserie,ylim=c(-1,1),lag.max=60,col=c(2,rep(1,11)),na.action=na.pass, main="Series d1d12lnserie")
+pacf(d1d12lnserie,ylim=c(-1,1),lag.max=60,col=c(2,rep(1,11)),na.action=na.pass, main="Series d1d12lnserie")
+
+par(mfrow = c(1,1))
+```
+
+First, we'll look at the regular part of the series. It clearly has a first significant lag in both the ACF and PACF which, if we think they rapidly decrease to 0, leads to think of a p=1 and q=1 . If we take the confidence intervals as a very strict measure then it is possible to see a q=5. As for the seasonal part, it clearly has a 1 significant lag in the ACF and it quickly decreases to 0 in the PACF, which leads to a p=0, q=1.
+
+So, the two chosen models will be, in one hand an $ARIMA(1,0,1)(0,0,1)_{12}$ and on the other hand an $ARIMA(1,0,5)(0,0,1)_{12}$
+
+\newpage
+
+# Estimation
+
+To proceed with the estimation we'll take as a starting point the two models chosen in the last section, we'll compute their estimate using the arima function in R from the stats package. Once they are estimated, the p-value of the parameters will be computed and if they are significant they'll remain in the model and, if not, they'll be deleted.
+
+## Use R to estimate the identified models.
+
+**$ARMA(1,0,1)(0,0,1)_{12}$**
+
+```{r}
+(mod1=arima(d1d12lnserie,order=c(1,0,1),seasonal=list(order=c(0,0,1),period=12)))
+```
+
+```{r}
+abs(mod1$coef/sqrt(diag(mod1$var.coef)))
+```
+
+The non-significant parameters are the first auto-regressive and the intercept, which will be taken out of the model. As for the intercept, now the estimated model will be based on the logarithmic series and the differences will be applied in the computation done by the function itself.
+
+```{r}
+(mod1=arima(lnserie,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+```
+The coefficient `ar1` is still not significant in this model without intercept so we definitely take it out.
+
+```{r}
+(mod1=arima(lnserie,order=c(0,1,1),seasonal=list(order=c(0,1,1),period=12)))
+```
+Note that the AIC has decreased in each step and now we have a model ($ARIMA(0,1,1)(0,1,1)_{12}$) where all parameters are significant.
+
+**$ARMA(1,0,5)(0,0,1)_{12}$**
+
+```{r}
+(mod2 = arima(d1d12lnserie,order=c(1,0,5),seasonal=list(order=c(0,0,1),period=12)))
+```
+
+```{r}
+abs(mod2$coef/sqrt(diag(mod2$var.coef)))
+```
+
+The intercept and some of the `ma` coefficients are non-significant. The same procedure will be applied it was done in the first model.
+
+```{r}
+(mod2 = arima(lnserie,order=c(1,1,5),seasonal=list(order=c(0,1,1),period=12)))
+```
+Coefficients `ma3` to `ma5` are non-significant, we take them out one by one.
+
+```{r}
+(mod2 = arima(lnserie,order=c(1,1,4),seasonal=list(order=c(0,1,1),period=12)))
+```
+Now coefficient `ma4` is significant, but we still want to check if we can get a model with a lower AIC by taking it out.
+
+```{r}
+(mod2_ = arima(lnserie,order=c(1,1,3),seasonal=list(order=c(0,1,1),period=12)))
+```
+Note that the AIC has increased and the coefficients `ar1` and `ma1` are not significant now. We won't go further on this analysis and we will stay with the previous model, $ARIMA(1,1,3)(0,1,1)_{12}$.
+
+So finally we propose two seasonal ARIMA models, $ARIMA(0,1,1)(0,1,1)_{12}$ and $ARIMA(1,1,4)(0,1,1)_{12}$, for fitting the `logseries` and they both have similar AIC.
+
+\newpage
+
+# Validation
+
+In order to validate the models the residuals will be analyzed, a look at the AR and MA infinite models will be taken to see if the models are invertible and/or causal and the stability of the model will also be checked.
+
+## Perform the complete analysis of residuals, justifying all assumptions made. Use the corresponding tests and graphical results.
+
+When checking the residuals, 3 aspects are analyzed: 
+
+  1. Homogeneity of variance, for which the residuals, the square root of absolute values of the residuals with smooth fit and the ACF and PACF of square residuals are plotted.
+  
+  2. Normality, for which the Quantile-Quantile and the histogram with theoretical density overlapped are plotted.
+  
+  3. Independence, for which the ACF and PACF of residuals are plotted and LJung-Box test is run.
+
+**$ARIMA(0,1,1)(0,1,1)_{12}$**
+
+```{r}
+validation(model = mod1, dades = d1d12lnserie)
+```
+
+It seems that the main concern we may have is about the LJung-Box test for the independence property as p-values fall into the rejection band pretty early. About the normality of the residuals, it is close to be fulfilled but we noted that the distribution of the residuals is not symmetric with respect to zero, having more big negative residuals than positive ones. It is one of the kind of issues that one would expect to solve by applying ARIMA extensions. The variance of the residuals can also be considered non-constant, since it increases from approximately 2008.
+
+**$ARIMA(1,1,4)(0,1,1)_{12}$**
+
+```{r}
+validation(model = mod2, dades = d1d12lnserie)
+```
+
+It seems that the independence property is better fulfilled now, but p-values fall end up getting near the rejection band. About the normality of the residuals, it is once again close to be fulfilled but the distribution of the residuals is not symmetric with respect to zero (it is even more asymmetric than before). The variance is also increasing from 2008 when using this second model.
+
+## Include analysis of the expressions of the AR and MA infinite models, discuss if they are causal and/or invertible and report some adequacy measures.
+
+To check if the models are causal and/or invertible the modul of their coefficients will be computed and if they are outside the unit root then they are causal and/or invertible.
+
+**$ARIMA(0,1,1)(0,1,1)_{12}$**
+
+```{r}
+infinite_models(mod1)
+```
+
+This model has no autoregressive part, therefore it is causal/stationary. The modulo of the roots of the MA Characteristic polynomial fall outside the unit root, so we could consider it as invertible. However, we should be careful since the modulo all the roots of the MA Characteristic polynomial except one are pretty near to one (`1.0138..`).
+
+**$ARIMA(1,1,4)(0,1,1)_{12}$**
+
+```{r}
+infinite_models(mod2)
+```
+
+The modulo of the only root of the AR Characteristic polynomial is `1.1589` (outside the unit circle) so the model is invertible. The modulo of the roots of the MA Characteristic polynomial again fall outside the unit root, but the modulo of most of the roots is pretty near $1$, so we can say the model is causal but we should still take into account that fact. 
+
+## Check the stability of the proposed models and evaluate their capability of prediction, reserving the last 12 observations.
+
+To check the stability of the proposed models and evaluate their capability of prediction, what we'll do is to estimate each model two times, one with the whole series and one leaving out the last 12 observations. Once both are estimated we'll compare the significance, sign and magnitude of the parameters. If they are the same, then it is stable and if not, it is not stable.
+
+**$ARIMA(0,1,1)(0,1,1)_{12}$**
+
+```{r}
+ultim=c(2018,12)
+pdq=c(0,1,1)
+PDQ=c(0,1,1)
+
+serie2=window(serie,end=ultim)        #Incomplete series: leave last year out!
+lnserie2=log(serie2)
+serie1=window(serie,end=ultim+c(1,0)) #complete series
+lnserie1=log(serie1)
+```
+
+Estimation without 12 last observations
+
+```{r}
+(modA=arima(lnserie2,order=pdq,seasonal=list(order=PDQ,period=12)))
+abs(modA$coef/sqrt(diag(modA$var.coef)))
+```
+
+Estimation with the complete series
+
+```{r}
+(modB=arima(lnserie1,order=pdq,seasonal=list(order=PDQ,period=12)))
+abs(modB$coef/sqrt(diag(modB$var.coef)))
+```
+
+Both estimations are very close in significance and magnitude and have the same sign, so we'll conclude that this model is stable.
+
+**$ARIMA(1,1,4)(0,1,1)_{12}$**
+
+```{r}
+ultim=c(2018,12)
+pdq=c(1,1,4)
+PDQ=c(0,1,1)
+
+serie2=window(serie,end=ultim)        #Incomplete series: leave last year out!
+lnserie2=log(serie2)
+serie1=window(serie,end=ultim+c(1,0)) #complete series
+lnserie1=log(serie1)
+```
+
+Estimation without 12 last observations
+
+```{r}
+(modA=arima(lnserie2,order=pdq,seasonal=list(order=PDQ,period=12)))
+abs(modA$coef/sqrt(diag(modA$var.coef)))
+```
+
+Estimation with the complete series
+
+```{r}
+(modB=arima(lnserie1,order=pdq,seasonal=list(order=PDQ,period=12)))
+abs(modB$coef/sqrt(diag(modB$var.coef)))
+```
+
+As in the first model, both estimations are very close in significance, sign and magnitude, so this model is also stable.
+
+## Select the best model for forecasting.
+
+Once both models are validated and knowing both are stable, choosing a model for the forecasting step will be based on the simplicity of the model and the different criterion offered by the estimations.
+
+Both models have passed through all the validation steps with similar outcomes, so we will keep the model with the lowest AIC which, in our case, is **$ARIMA(0,1,1)(0,1,1)_{12}$**. It turns out that it is also the simplest one between both.
+
+\newpage
+
+# Prediction
+
+In this section, the function forecast of the package forecast will be used to perform the predictions. The parameters it needs are two, the estimated model and how many periods we want it to predict. Then, it computes the predictions and calculates a 80% and 95% confidence intervals.
+
+## Obtain long term forecasts for the twelve months following the last observation available; provide also confidence intervals.
+
+**$ARIMA(0,1,1)(0,1,1)_{12}$**
+
+```{r}
+(forecast_mod1<-forecast::forecast(mod1, h=12))
+```
+
+
+```{r}
+plot(forecast::forecast(mod1, h=12))
+```
+
+* Accuracy measurements
+```{r accuracy measuraments v1}
+(acc_mod1<-accuracy(mod1))
+```
+
+\newpage
+
+# Outlier Treatment:
+
+```{r}
+source("atipics2.R")
+source("CalendarEffects.r")
+```
+
+## Analyze of the Calendar Effects are significant.
+
+In the original series, we can note a fall in mean CO2 emissions around 2009. In this [webpage](https://www.reuters.com/article/us-eia-monthly-forecast-carbon-idUSTRE57A4ER20090811), they say that “The economic downturn, combined with natural gas displacing some coal as a source of electricity generation, is projected to lead to a 5 percent decline in fossil-fuel based (carbon dioxide) emissions in 2009”. About the industry, they say that "Fuel switching by electricity generators and declines in industrial use were projected to lead to a 7.9 percent decline in carbon emissions from coal in 2009".
+
+We're going to take that fact into account when doing the calendar effects analysis, so we will be creating an auxiliary variable for data before/from 2009 and also variables for Easter and trading days configurations of the corresponding month. Then, we will fit all pertinent models and check their AIC and coefficients levels of significance to choose one.
+
+```{r}
+from2009=ts(rep(0,length(serie)),start=start(serie),freq=frequency(serie))
+from2009[229:length(serie)]=1
+```
+
+```{r}
+data=c(start(serie)[1],start(serie)[2], length(serie))
+wTradDays=Wtrad(data)
+wEast=Weaster(data)
+```
+
+```{r}
+pdq=c(0,1,1)
+PDQ=c(0,1,1)
+```
+
+```{r}
+(modT=arima(lnserie,order=pdq,seasonal=list(order=PDQ,period=12),xreg=wTradDays))
+(modE=arima(lnserie,order=pdq,seasonal=list(order=PDQ,period=12),xreg=wEast))
+(modF=arima(lnserie,order=pdq,seasonal=list(order=PDQ,period=12),xreg=from2009))
+```
+
+```{r}
+(modTE=arima(lnserie,order=pdq,seasonal=list(order=PDQ,period=12),xreg=data.frame(wTradDays,wEast)))
+(modFE=arima(lnserie,order=pdq,seasonal=list(order=PDQ,period=12),xreg=data.frame(from2009,wEast)))
+(modTF=arima(lnserie,order=pdq,seasonal=list(order=PDQ,period=12),xreg=data.frame(wTradDays,from2009)))
+```
+
+```{r}
+(modTEF=arima(lnserie,order=pdq,seasonal=list(order=PDQ,period=12),xreg=data.frame(wTradDays,wEast,from2009)))
+```
+
+Note that the `wEast` coefficient is never significant. Besides, the found model with lowest AIC is the one that includes correction only for trading days and "2009 effect". Now we are going to estimate the calendar effects and get the corrected series.
+
+```{r}
+EfecTD=coef(modTF)["wTradDays"]*wTradDays
+Efec2009=coef(modTF)["from2009"]*from2009
+lnserieEC=lnserie-EfecTD-Efec2009
+```
+
+```{r}
+plot(lnserie,main="Corrected lnserie (red) vs lnserie")
+lines(lnserieEC,col=2) #red
+abline(v=1990:2019,lty=3,col=4)
+```
+
+Next, we see which transformations are needed to make this new series stationary. First, we eliminate the seasonal component by taking an order 12 seasonal difference.
+
+```{r}
+d12lnserieEC=diff(lnserieEC,12)
+plot(d12lnserieEC, ylab="d12lnserieEC")
+abline(h=0)
+```
+
+Note that the mean is not constant, we take a regular difference.
+
+```{r}
+d1d12lnserieEC=diff(d12lnserieEC,1)
+plot(d1d12lnserieEC)
+abline(h=0)
+```
+
+Now the mean seems to be constant equal zero. We check if an extra regular difference is needed:
+```{r}
+cat("var(lnserieEC) =", var(lnserieEC), "\n")
+cat("var(d12lnserieEC) =", var(d12lnserieEC), "\n")
+cat("var(d1d12lnserieEC) =", var(d1d12lnserieEC), "\n")
+cat("var(diff(d1d12lnserieEC)) =", var(diff(d1d12lnserieEC)), "\n")
+```
+
+An extra regular difference artificially increases the variance.
+
+Now let's identify some plausible model for this data and see if we should select it instead of the non-extended ARIMA.
+
+```{r}
+par(mfrow=c(1,2))
+acf(d1d12lnserieEC,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72,main="d1d12lnserieEC")
+pacf(d1d12lnserieEC,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72,main="d1d12lnserieEC")
+```
+We propose AR(2)/ARMA(1,1) for the regular part and MA(1) for the seasonal part.
+
+```{r}
+(mod1EC=arima(lnserie,order=c(2,1,0),seasonal=list(order=c(0,1,1),period=12),xreg=data.frame(wTradDays,from2009)))
+```
+
+```{r}
+(mod2EC=arima(lnserie,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12),xreg=data.frame(wTradDays,from2009)))
+```
+Note that the second model has the lowest AIC seen until now, but the coefficient `ar1` is not significant. Let's see if AIC improves by removing it:
+
+```{r}
+(mod2EC_ = arima(lnserie,order=c(0,1,1),seasonal=list(order=c(0,1,1),period=12),xreg=data.frame(wTradDays,from2009)))
+```
+AIC does not decrease, so we stay with $ARIMA(1,1,1)(0,1,1)_{12}$ for the corrected logseries.
+
+Let's validate this model now:
+
+**Residuals analysis**
+
+```{r}
+validation(mod2EC,d1d12lnserieEC)
+```
+
+**Infinite models: causality and invertibility**
+
+```{r}
+infinite_models(mod2EC)
+```
+
+**Stability**
+
+```{r}
+ultim=c(2018,12)
+pdq=c(0,1,1)
+PDQ=c(0,1,1)
+
+wTradDays1=window(wTradDays,end=ultim+c(1,0))
+from20091=window(from2009,end=ultim+c(1,0))
+from20092=window(from2009,end=ultim)
+wTradDays2=window(wTradDays,end=ultim)
+from20092=window(from2009,end=ultim)
+```
+
+Estimation without last 12 observations:
+```{r}
+(mod2EC.2=arima(lnserie2,order=pdq,seasonal=list(order=PDQ,period=12),xreg=data.frame(wTradDays2,from20092)))
+abs(mod2EC.2$coef/sqrt(diag(mod2EC.2$var.coef)))
+```
+
+Estimation with the complete series:
+```{r}
+(mod2EC.1=arima(lnserie1,order=pdq,seasonal=list(order=PDQ,period=12),xreg=data.frame(wTradDays1,from20091)))
+abs(mod2EC.1$coef/sqrt(diag(mod2EC.1$var.coef)))
+```
+ote that we still have some issues with the normality of the residuals (residuals histogram/q-qplot). Also note that the variance of the residuals is still higher for the latest observations. The model is causal by a very small margin (roots with modulo approx `1.01`) and invertible. The model is also stable as the sign, order of magnitude and significance of the coefficients doesn't change drastically when fitting the incomplete series.
+
+## For the last selected model, apply the automatic detection of outliers and its treatment. Try to give the interpretation of detected outliers
+
+```{r mod atip}
+mod.atip=outdetec(mod2EC, dif=c(1,12), crit=2.8, LS=T) # automatic detection of outliers with crit=2.8 and LS =TRUE
+##names(mod.atip)
+
+cat("Estimated residual variance after outliers detection and treatment:",mod.atip$sigma2)
+```
+
+*Table with detected outliers, their types, magnitud, statistic values and cronology*
+```{r outliers table}
+atipics=mod.atip$atip[order(mod.atip$atip[,1]),] #order outliers by date of ocurrence
+meses=c("Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic")
+data.frame(atipics,Fecha=paste(meses[(atipics[,1]-1)%%12+1],start(lnserie)[1]+((atipics[,1]-1)%/%12)),perc.Obs=exp(atipics[,3])*100)
+```
+On the table we can observe the outliers, their type and his magnitude. For example: 
+* In Feb 1991 we found a transitory change (TC) type of outlier with a significant statistic’s value $|3.059| > 2$. Its magnitud is given by Wcoeff = $-0.0568$ in the log scale (our series was log-transformed), which means that a decrease in the CO2 emissions with respect to what would have happened if this atypical had not taken place. 
+
+* The second is an additive outlier (AO) that occurs in May 2004. As learned in theory, its effect is only noticed at that specific date.
+
+* In Mar 2009 a level shift (LS) type of outlier is detected. Its effect takes place from that moment on. Also another one in Feb 2010, Oct 2015 and Jan 2016.
+
+
+## Once the series has been linearized, free of calendar and outliers’ effects, perform forecasting. Compare forecasts results for the original series: classical ARIMA vs ARIMA extension (by using the linearized models).
+
+```{r plot linearized model1}
+lnserie.lin=lineal(lnserie,mod.atip$atip) #returns the linearized (free of outlers) series in log-scale (remind that in this case we log-transformed the series)            
+
+serie.lin=exp(lnserie.lin)                #get linearized series in original scale
+
+plot(serie.lin, main="linearized series (in original scale)")  #In red: linearized series (without outliers) but in original scale
+lines(serie)
+```
+
+## Identification of the model
+```{r Identification of the model2}
+d1d12lnserie.lin=diff(diff(lnserie.lin,12))
+par(mfrow=c(1,2), mar=c(5,4,4,5))
+acf(d1d12lnserie.lin,ylim=c(-1,1),lag.max=72,col=c(2,rep(1,11)),lwd=2,main="ACF d1d12lnserie.lin")
+pacf(d1d12lnserie.lin,ylim=c(-1,1),lag.max=72,col=c(rep(1,11),2),lwd=2,main="PACF d1d12lnserie.lin")
+```
+
+## Estimation of the linearized model
+
+After some search, this is the model with lower AIC we've found: $ARIMA(0,1,5)(0,1,1)_{12}$
+```{r Estimation of the linearized model}
+(mod.lin=arima(lnserie.lin,order=c(0,1,5),seasonal=list(order=c(0,1,1),period=12),xreg=data.frame(wTradDays,from2009)))
+```
+
+## Validation of the linearized model
+```{r Validation of the linearized model}
+dades=d1d12lnserie.lin  #stationary
+model=mod.lin           # fitted ARIMA model to the log-linearized series
+validation(model,dades)
+```
+
+Again we have to verify the following hypotesis:
+
+  1. Homogeneity of variance, for which the residuals, the square root of absolute values of the residuals with smooth fit and the ACF and PACF of square residuals are plotted.
+  
+  2. Normality, for which the Quantile-Quantile and the histogram with theoretical density overlapped are plotted.
+  
+  3. Independence, for which the ACF and PACF of residuals are plotted and LJung-Box test is run.
+
+In the validation of this last model, it seems that all the hypotesis are accomplish except for maybe the normality of the residuals (check residuals q-qplot and histogram).
+
+
+## Forecasting linearized serie
+
+```{r forecasting linearized serie}
+ultim=c(2018,12)
+pdq=c(0,1,5)
+PDQ=c(0,1,1)
+seas=list(order=PDQ,period=12)
+reg = data.frame(wTradDays,from2009)
+reg2 = data.frame(wTradDays2,from20092)
+
+serie1.lin=window(serie.lin,end=ultim+c(1,0))
+lnserie1.lin=log(serie1.lin)
+serie2.lin=window(serie.lin,end=ultim)
+lnserie2.lin=log(serie2.lin)
+
+#Fit the model to the complete series: lnserie1
+(mod.lin_v1=arima(lnserie1.lin,order=pdq,seasonal=seas,xreg=reg))
+```
+
+*Fitted the model to the subset series (without 2018 data): lnserie2*
+```{r mod2 linearized}
+(mod.lin_v2=arima(lnserie2.lin,order=pdq,seasonal=seas,xreg=reg2))
+```
+
+The model is stable it accomplish the three hypotesis in significance, sign and magnitude.
+
+### Predictions
+
+```{r plot predictions linearized, eval=FALSE, echo=FALSE}
+pred=predict(mod2.lin,n.ahead=12)
+wLS=sum(mod.atip$atip[mod.atip$atip$type_detected=="LS" & mod.atip$atip$Obs<=length(serie)-12,3])
+predic=pred$pr+wLS
+pr<-ts(c(tail(lnserie2.lin,1),predic),start=ultim,freq=12)#puntual predictions (log-scale) obtained
+se<-ts(c(0,pred$se),start=ultim,freq=12)              #Standard errors for puntual predictions
+
+##Prediction Intervals (back transformed to original scale using exp-function)
+tl<-ts(exp(pr-1.96*se),start=ultim,freq=12)
+tu<-ts(exp(pr+1.96*se),start=ultim,freq=12)
+pr<-ts(exp(pr),start=ultim,freq=12)
+
+#Plot of the original airbcn series (thousands) and out-of-sample predictions
+ts.plot(serie,tl,tu,pr,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=ultim[1]+c(-3,+2),type="o",main="Model ARIMA(0,1,5)(0,1,1)_12")
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+
+
+
+```{r}
+mod.lin_=arima(lnserie.lin,order=pdq,seasonal=seas)
+```
+
+
+```{r forecast linealitzed model}
+(forecast_mod2_lin<-forecast::forecast(mod.lin_, h=12))
+```
+
+```{r plot forecast linealitzed model}
+plot(forecast::forecast(mod.lin_, h=12))
+```
+
+
+* Accuracy measurements
+```{r accuracy measurements linearized model}
+(acc_mod2.lin<-accuracy(mod.lin_))
+```
+
+
+* Table ARIMA vs ARIMA extension
+
+```{r summary table}
+result=data.frame(
+  par=c(length(coef(mod1)),length(coef(mod.lin))+nrow(mod.atip$atip)),
+  Sigma2Z=c(mod1$sigma2,mod.lin$sigma2),
+  AIC=c(AIC(mod1),AIC(mod.lin)+2*nrow(mod.atip$atip)),
+  BIC=c(BIC(mod1),BIC(mod.lin)+log(length(serie)-13)*nrow(mod.atip$atip)),
+  RMSE = c( round(acc_mod1[2], 6), round(acc_mod2.lin[2], 6)  ),
+  MAE = c( round(acc_mod1[3], 6),  round(acc_mod2.lin[3], 6) ),
+  MPE = c( round(acc_mod1[4], 6),  round(acc_mod2.lin[4], 6) ),
+  MAPE = c( round(acc_mod1[5], 6),  round(acc_mod2.lin[5], 6) )
+  )
+
+row.names(result)=c("ARIMA(0,1,1)(0,1,1)_12","ARIMA(0,1,5)(0,1,1)_12+Atip")
+
+result
+```
+
+As expected the final model without outliers and with calendar effects have a better performance in the predictions. Also having less values for AIC and BIC, for this reason for forecast this serie we will choose the second model $ARIMA(0,1,5)(0,1,1)_{12}+Atip$.
+
+To sum up, is important take into account all the steps that we perform in this project. First of all make the serie stationary, then identify the model, predict values and check out the outliers and calendar effects that the serie could have in order to obtain better predictions.
+
+\newpage
+
+
+# References
+
+Josep A. Sanchez and Lesly Acosta, Time serie [class notes], 2021
